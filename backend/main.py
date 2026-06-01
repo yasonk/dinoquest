@@ -12,37 +12,115 @@ from dotenv import load_dotenv
 import firebase_admin
 from firebase_admin import credentials, firestore, auth as fb_auth
 
-# Load sensitive environment variables securely
-load_dotenv()
-
 ADMIN_EMAILS = [
     email.strip() for email in os.getenv("ADMIN_EMAILS", "").split(",") if email.strip()
 ]
 LEADERBOARD_ENABLED = os.getenv("LEADERBOARD_ENABLED", "false").lower() == "true"
+TEXT_MODEL = os.getenv("DINOQUEST_TEXT_MODEL", "gemini-2.5-flash")
+IMAGE_MODEL = os.getenv("DINOQUEST_IMAGE_MODEL", "gemini-2.5-flash-image")
 
 # Load sensitive environment variables securely
 load_dotenv()
 
-# Initialize Firebase Admin for the backend
-if not firebase_admin._apps:
-    firebase_admin.initialize_app()
-db = firestore.client()
-api_key = os.getenv("GEMINI_API_KEY")
 
-if not api_key:
-    raise ValueError("GEMINI_API_KEY is not set in backend/.env!")
+def parse_bool_env(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
-client = genai.Client(
-    api_key=api_key,
-    http_options=types.HttpOptions(
+
+def build_genai_client() -> genai.Client:
+    use_vertexai = parse_bool_env("GOOGLE_GENAI_USE_VERTEXAI", default=False)
+    api_key = os.getenv("GEMINI_API_KEY")
+    project = os.getenv("GOOGLE_CLOUD_PROJECT")
+    location = os.getenv("GOOGLE_CLOUD_LOCATION")
+    http_options = types.HttpOptions(
         retry_options=types.HttpRetryOptions(
             initial_delay=1.0,
             attempts=5,
             http_status_codes=[408, 429, 500, 502, 503, 504],
         ),
         timeout=120 * 1000,
-    ),
-)
+    )
+
+    if use_vertexai:
+        if api_key:
+            raise ValueError(
+                "Vertex AI mode is enabled, but GEMINI_API_KEY is also set. "
+                "Unset GEMINI_API_KEY when using Vertex AI."
+            )
+        if not project:
+            raise ValueError(
+                "Vertex AI mode requires GOOGLE_CLOUD_PROJECT to be set."
+            )
+        if not location:
+            raise ValueError(
+                "Vertex AI mode requires GOOGLE_CLOUD_LOCATION (for example us-central1)."
+            )
+
+        print(
+            f"Initializing Google GenAI client in Vertex AI mode "
+            f"(project={project}, location={location}, text_model={TEXT_MODEL}, image_model={IMAGE_MODEL})",
+            flush=True,
+        )
+        return genai.Client(
+            vertexai=True,
+            project=project,
+            location=location,
+            http_options=http_options,
+        )
+
+    if not api_key:
+        raise ValueError(
+            "API key mode requires GEMINI_API_KEY to be set in backend/.env or the shell environment."
+        )
+
+    print(
+        f"Initializing Google GenAI client in API key mode "
+        f"(text_model={TEXT_MODEL}, image_model={IMAGE_MODEL})",
+        flush=True,
+    )
+    return genai.Client(api_key=api_key, http_options=http_options)
+
+
+def clamp_stat(value, default: int) -> int:
+    try:
+        numeric_value = int(round(float(value)))
+    except (TypeError, ValueError):
+        return default
+    return max(1, min(10, numeric_value))
+
+
+def normalize_dino_details(details: dict, request: "GenerationRequest") -> dict:
+    stats = details.get("stats")
+    if not isinstance(stats, dict):
+        stats = {}
+
+    normalized_stats = {
+        "speed": clamp_stat(stats.get("speed", details.get("speed")), 6),
+        "health": clamp_stat(stats.get("health", details.get("health")), 6),
+        "jump": clamp_stat(stats.get("jump", details.get("jump")), 6),
+    }
+
+    return {
+        "name": details.get("name") or "Mystery Dino",
+        "habitat": details.get("habitat") or request.habitat,
+        "diet": details.get("diet") or request.diet,
+        "type": details.get("type") or "Balanced",
+        "description": details.get("description")
+        or "A friendly dinosaur ready for adventure.",
+        "stats": normalized_stats,
+        "imagePrompt": details.get("imagePrompt")
+        or "A cute, friendly dinosaur with vibrant colors.",
+    }
+
+
+# Initialize Firebase Admin for the backend
+if not firebase_admin._apps:
+    firebase_admin.initialize_app()
+db = firestore.client()
+client = build_genai_client()
 
 # Initialize FastAPI application
 app = FastAPI(title="DinoQuest Secure Backend")
@@ -106,7 +184,7 @@ async def generate_dinosaur(request: GenerationRequest):
         Assign it one of these types: Speedy, Tank, Balanced, Agile."""
 
         text_response = client.models.generate_content(
-            model="gemini-3-flash-preview",
+            model=TEXT_MODEL,
             contents=text_prompt,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
@@ -119,7 +197,7 @@ async def generate_dinosaur(request: GenerationRequest):
             for part in text_response.candidates[0].content.parts
             if hasattr(part, "text") and part.text
         )
-        details = json.loads(text_content)
+        details = normalize_dino_details(json.loads(text_content), request)
         image_prompt = details.get(
             "imagePrompt",
             "A cute, friendly dinosaur with vibrant colors and use a random color as base color if the user does not specify any color.",
@@ -136,7 +214,7 @@ async def generate_dinosaur(request: GenerationRequest):
         )
 
         image_response = client.models.generate_content(
-            model="gemini-3.1-flash-image-preview",
+            model=IMAGE_MODEL,
             contents=img_prompt,
             config=types.GenerateContentConfig(
                 response_modalities=["IMAGE"],

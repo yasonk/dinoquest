@@ -6,7 +6,7 @@ Usage:
        gcloud auth application-default login
        gcloud config set project YOUR_PROJECT_ID
   2. Run:
-       python scripts/seed_scores.py
+       python prep/seed_scores.py --project YOUR_PROJECT_ID
 """
 
 import argparse

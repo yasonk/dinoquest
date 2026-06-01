@@ -30,7 +30,7 @@ Run these exact identical bash commands structurally inside an authenticated Goo
 
 ```bash
 # 1. Provide your authenticated Google Cloud Project ID
-PROJECT_ID="your-google-project-id"
+PROJECT_ID="dyno-test-3fc51"
 
 # 2. Mechanically execute Google Cloud Build to construct the Multi-Stage Docker Protocol remotely
 gcloud builds submit --tag gcr.io/$PROJECT_ID/dino-quest
@@ -38,14 +38,14 @@ gcloud builds submit --tag gcr.io/$PROJECT_ID/dino-quest
 gcloud builds submit --tag gcr.io/$PROJECT_ID/dinoquest2
 
 # 3. Deploy the finalized Image completely natively into Google Cloud Run Serverless!
-# We securely pass GEMINI_API_KEY as an environment variable so it never touches codebase history.
+# Vertex AI mode uses the Cloud Run service account instead of a GEMINI_API_KEY.
 
 gcloud run deploy dino-quest \
   --image gcr.io/$PROJECT_ID/dino-quest \
   --platform managed \
   --region us-central1 \
   --allow-unauthenticated \
-  --set-env-vars="GEMINI_API_KEY="
+  --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=us-central1"
 
 
 gcloud run deploy dinoquest2 \
@@ -53,12 +53,11 @@ gcloud run deploy dinoquest2 \
   --platform managed \
   --region us-central1 \
   --allow-unauthenticated \
-  --set-env-vars="GEMINI_API_KEY="
+  --set-env-vars="GOOGLE_GENAI_USE_VERTEXAI=true,GOOGLE_CLOUD_PROJECT=$PROJECT_ID,GOOGLE_CLOUD_LOCATION=us-central1"
 
 
 
 ```
 
 Once the container finishes booting, Google Cloud Run will instantly dispense your production HTTPS URL publicly on the internet!
-
 
